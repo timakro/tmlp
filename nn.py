@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import os
 import gzip
 import random
@@ -13,8 +13,8 @@ from tensorflow.keras.layers import (Input, TimeDistributed, Embedding, ZeroPadd
 
 
 EPOCHS = 999
-BATCH_SIZE = 50
-SEQUENCE_LENGTH = 30 # Sources say 200-400 or 200-300 is feasible. 300 frames is 12 seconds.
+BATCH_SIZE = 99 # I've got 99 samples but a batch ain't exceeding int32 max
+SEQUENCE_LENGTH = 300 # Sources say 200-400 or 200-300 is feasible. 300 frames is 12 seconds.
 VALIDATION_SPLIT = 0.2
 
 SESSION_DIR = 'sessions'
@@ -121,19 +121,19 @@ def build_model(live=False):
     inp = Input(batch_shape=(1 if live else BATCH_SIZE, 1 if live else SEQUENCE_LENGTH, 50, 90))
     net = Embedding(TILE_COUNT, 8)(inp)
     #net = TimeDistributed(ZeroPadding2D(padding=1))(net)
-    net = TimeDistributed(Conv2D(filters=32, kernel_size=5, padding='same', activation='relu'))(net)
+    net = TimeDistributed(Conv2D(filters=16, kernel_size=5, padding='same', activation='relu'))(net)
     net = TimeDistributed(MaxPooling2D(pool_size=2, strides=2))(net)
-    net = TimeDistributed(Conv2D(filters=64, kernel_size=3, padding='same', activation='relu'))(net)
+    net = TimeDistributed(Conv2D(filters=64, kernel_size=5, padding='same', activation='relu'))(net)
     #net = TimeDistributed(MaxPooling2D(pool_size=2, strides=2))(net)
     net = Reshape((1 if live else SEQUENCE_LENGTH, -1))(net)
     net = LSTM(32, return_sequences=True, stateful=True)(net)
-    #net = Dropout(0.2)(net)
+    net = Dropout(0.2)(net)
     net = LSTM(128, return_sequences=True, stateful=True)(net)
-    #net = Dropout(0.2)(net)
+    net = Dropout(0.2)(net)
     net = TimeDistributed(Dense(2048, activation='relu'))(net)
-    #net = Dropout(0.2)(net)
-    fin = TimeDistributed(Dense(2048, activation='relu'))(net)
-    #fin = Dropout(0.2)(net)
+    net = Dropout(0.2)(net)
+    net = TimeDistributed(Dense(2048, activation='relu'))(net)
+    fin = Dropout(0.2)(net)
     target = TimeDistributed(Dense(2), name='target')(fin)
     binary = TimeDistributed(Dense(5, activation='sigmoid'), name='binary')(fin)
     weapon = TimeDistributed(Dense(WEAPON_COUNT, activation='softmax'), name='weapon')(fin)
@@ -162,9 +162,9 @@ def train(model):
     test_set = split_off_test_set(train_set)
 
     # Experiment: Overfit single batch
-    train_set = train_set[:BATCH_SIZE]
-    for t in train_set:
-        t['volume'] = SEQUENCE_LENGTH
+    #train_set = train_set[:BATCH_SIZE]
+    #for t in train_set:
+    #    t['volume'] = SEQUENCE_LENGTH
 
     train_set, total_train_batches = split_into_super_batches(train_set)
     test_set, total_test_batches = split_into_super_batches(test_set)
@@ -177,14 +177,14 @@ def train(model):
         print("Epoch {}/{} training metrics {}".format(epoch+1, EPOCHS, format_metrics(metrics, model)))
         model.reset_metrics()
 
-        #save_filename = os.path.join(CHECKPOINT_DIR, "cp-{:04}.ckpt".format(epoch))
-        #print("Saving model to", save_filename)
-        #model.save_weights(save_filename)
+        save_filename = os.path.join(CHECKPOINT_DIR, "cp-{:04}.ckpt".format(epoch))
+        print("Saving model to", save_filename)
+        model.save_weights(save_filename)
 
-        #for batch, x, y, mask in state_control(model, iterate_batches(test_set)):
-        #    metrics = model.test_on_batch(x, y, mask, reset_metrics=False)
-        #print("Epoch {}/{} validation metrics {}".format(epoch+1, EPOCHS, format_metrics(metrics, model)))
-        #model.reset_metrics()
+        for batch, x, y, mask in state_control(model, iterate_batches(test_set)):
+            metrics = model.test_on_batch(x, y, mask, reset_metrics=False)
+        print("Epoch {}/{} validation metrics {}".format(epoch+1, EPOCHS, format_metrics(metrics, model)))
+        model.reset_metrics()
 
 def time_forward_pass():
     import time
@@ -209,7 +209,7 @@ def estimate_model_memory_usage(model):
     shapes_mem_count = 0
     for l in model.layers:
         single_layer_mem = 1
-        for s in l.output_shape:
+        for s in (l.output_shape[0] if isinstance(l.output_shape, list) else l.output_shape):
             single_layer_mem *= s
         shapes_mem_count += single_layer_mem
 
@@ -233,14 +233,14 @@ def already_exists_bug_workaround():
 
 
 if __name__ == '__main__':
-    np.random.seed(1)
-    tf.random.set_random_seed(1)
+    #np.random.seed(1)
+    #tf.random.set_random_seed(1)
 
     model = build_model()
-    model.summary()
-    print(estimate_model_memory_usage(model), 'GiB')
+    #model.summary(100)
+    #print(estimate_model_memory_usage(model), 'GiB')
 
-    already_exists_bug_workaround() # Also try downgrading to 1.12
+    #already_exists_bug_workaround() # Also try downgrading to 1.12
     train(model)
 
     #time_forward_pass()
