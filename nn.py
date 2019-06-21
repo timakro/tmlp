@@ -118,13 +118,12 @@ def state_control(model, batches):
     model.reset_states()
 
 def build_model(live=False):
+    # Note: Layers cannot exceed a size of int32 max
     inp = Input(batch_shape=(1 if live else BATCH_SIZE, 1 if live else SEQUENCE_LENGTH, 50, 90))
     net = Embedding(TILE_COUNT, 8)(inp)
-    #net = TimeDistributed(ZeroPadding2D(padding=1))(net)
     net = TimeDistributed(Conv2D(filters=16, kernel_size=5, padding='same', activation='relu'))(net)
     net = TimeDistributed(MaxPooling2D(pool_size=2, strides=2))(net)
     net = TimeDistributed(Conv2D(filters=64, kernel_size=5, padding='same', activation='relu'))(net)
-    #net = TimeDistributed(MaxPooling2D(pool_size=2, strides=2))(net)
     net = Reshape((1 if live else SEQUENCE_LENGTH, -1))(net)
     net = LSTM(32, return_sequences=True, stateful=True)(net)
     net = Dropout(0.2)(net)
@@ -142,10 +141,12 @@ def build_model(live=False):
 
     # outputs: target, binary, weapon
     model.compile(optimizer='adam',
-                  loss=[tf.keras.losses.mean_squared_error, 'binary_crossentropy', 'sparse_categorical_crossentropy'], # Keras MSE because of bug with sample weights
+                  loss=['mean_squared_error', 'binary_crossentropy', 'sparse_categorical_crossentropy'],
                   loss_weights=[2.0, 1.5, 0.5], # Balance losses for a random model
                   sample_weight_mode='temporal',
-                  weighted_metrics={'target': 'mean_absolute_error', 'binary': 'accuracy', 'weapon': 'accuracy'})
+                  weighted_metrics={'target': ['mean_squared_error', 'mean_absolute_error'],
+                                    'binary': ['binary_crossentropy', 'accuracy'],
+                                    'weapon': ['sparse_categorical_crossentropy', 'accuracy']})
 
     return model
 
@@ -220,18 +221,6 @@ def estimate_model_memory_usage(model):
     gbytes = np.round(total_memory / (1024.0 ** 3), 3)
     return gbytes
 
-def already_exists_bug_workaround():
-    from tensorflow.core.protobuf import rewriter_config_pb2
-    from tensorflow.keras.backend import set_session
-    #tf.keras.backend.clear_session() # For easy reset of notebook state.
-
-    config_proto = tf.ConfigProto()
-    off = rewriter_config_pb2.RewriterConfig.OFF
-    config_proto.graph_options.rewrite_options.arithmetic_optimization = off
-    session = tf.Session(config=config_proto)
-    set_session(session)
-
-
 if __name__ == '__main__':
     #np.random.seed(1)
     #tf.random.set_random_seed(1)
@@ -240,7 +229,6 @@ if __name__ == '__main__':
     #model.summary(100)
     #print(estimate_model_memory_usage(model), 'GiB')
 
-    #already_exists_bug_workaround() # Also try downgrading to 1.12
     train(model)
 
     #time_forward_pass()
