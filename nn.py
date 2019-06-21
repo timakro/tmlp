@@ -155,7 +155,7 @@ def format_metrics(metrics, model):
     metrics_dict = dict(zip(model.metrics_names, metrics))
     return json.dumps(metrics_dict)
 
-def train(model):
+def train(model, first_epoch=0):
     train_set = get_session_dicts()
 
     # Score must be at least 10 of 20
@@ -170,7 +170,7 @@ def train(model):
     train_set, total_train_batches = split_into_super_batches(train_set)
     test_set, total_test_batches = split_into_super_batches(test_set)
 
-    for epoch in range(EPOCHS):
+    for epoch in range(first_epoch, EPOCHS):
         for batch, x, y, mask in state_control(model, iterate_batches(train_set)):
             metrics = model.train_on_batch(x, y, mask, reset_metrics=False)
             print("Batch {}/{} {}".format(batch+1, total_train_batches, format_metrics(metrics, model)))
@@ -229,6 +229,8 @@ if __name__ == '__main__':
     #model.summary(100)
     #print(estimate_model_memory_usage(model), 'GiB')
 
-    train(model)
+    model.load_weights(os.path.join(CHECKPOINT_DIR, "cp-0006.ckpt"))
+
+    train(model, first_epoch=7)
 
     #time_forward_pass()
