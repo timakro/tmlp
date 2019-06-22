@@ -8,6 +8,7 @@ import json
 import numpy as np
 from numpy.lib.recfunctions import structured_to_unstructured
 import tensorflow as tf
+from tensorflow.keras import backend as K
 from tensorflow.keras.layers import (Input, TimeDistributed, Embedding, ZeroPadding2D, Conv2D,
                                      MaxPooling2D, Reshape, LSTM, Dropout, Dense)
 
@@ -117,28 +118,30 @@ def state_control(model, batches):
     # Reset states when we're done
     model.reset_states()
 
-def build_model(live=False):
+def build_model(train=True):
     # Note: Layers cannot exceed a size of int32 max
-    inp = Input(batch_shape=(1 if live else BATCH_SIZE, 1 if live else SEQUENCE_LENGTH, 50, 90))
+    inp = Input(batch_shape=(BATCH_SIZE if train else 1, SEQUENCE_LENGTH if train else 1, 50, 90))
     net = Embedding(TILE_COUNT, 8)(inp)
     net = TimeDistributed(Conv2D(filters=16, kernel_size=5, padding='same', activation='relu'))(net)
     net = TimeDistributed(MaxPooling2D(pool_size=2, strides=2))(net)
     net = TimeDistributed(Conv2D(filters=64, kernel_size=5, padding='same', activation='relu'))(net)
-    net = Reshape((1 if live else SEQUENCE_LENGTH, -1))(net)
+    net = Reshape((SEQUENCE_LENGTH if train else 1, -1))(net)
     net = LSTM(32, return_sequences=True, stateful=True)(net)
-    net = Dropout(0.2)(net)
+    if train: net = Dropout(0.2)(net)
     net = LSTM(128, return_sequences=True, stateful=True)(net)
-    net = Dropout(0.2)(net)
+    if train: net = Dropout(0.2)(net)
     net = TimeDistributed(Dense(2048, activation='relu'))(net)
-    net = Dropout(0.2)(net)
+    if train: net = Dropout(0.2)(net)
     net = TimeDistributed(Dense(2048, activation='relu'))(net)
-    fin = Dropout(0.2)(net)
-    target = TimeDistributed(Dense(2), name='target')(fin)
-    binary = TimeDistributed(Dense(5, activation='sigmoid'), name='binary')(fin)
-    weapon = TimeDistributed(Dense(WEAPON_COUNT, activation='softmax'), name='weapon')(fin)
+    if train: net = Dropout(0.2)(net)
+    target = TimeDistributed(Dense(2), name='target')(net)
+    binary = TimeDistributed(Dense(5, activation='sigmoid'), name='binary')(net)
+    weapon = TimeDistributed(Dense(WEAPON_COUNT, activation='softmax'), name='weapon')(net)
 
     model = tf.keras.Model(inputs=inp, outputs=[target, binary, weapon])
+    return model
 
+def compile_model(model):
     # outputs: target, binary, weapon
     model.compile(optimizer='adam',
                   loss=['mean_squared_error', 'binary_crossentropy', 'sparse_categorical_crossentropy'],
@@ -147,8 +150,6 @@ def build_model(live=False):
                   weighted_metrics={'target': ['mean_squared_error', 'mean_absolute_error'],
                                     'binary': ['binary_crossentropy', 'accuracy'],
                                     'weapon': ['sparse_categorical_crossentropy', 'accuracy']})
-
-    return model
 
 def format_metrics(metrics, model):
     metrics = [round(float(m), 8) for m in metrics]
@@ -205,8 +206,6 @@ def time_forward_pass():
     model.reset_states()
 
 def estimate_model_memory_usage(model):
-    from tensorflow.keras import backend as K
-
     shapes_mem_count = 0
     for l in model.layers:
         single_layer_mem = 1
@@ -225,12 +224,16 @@ if __name__ == '__main__':
     #np.random.seed(1)
     #tf.random.set_random_seed(1)
 
+    #model = build_model(train=False)
+    #tf.io.write_graph(K.get_session().graph, logdir='.', name='my-model.pbtxt')
+
     model = build_model()
     #model.summary(100)
     #print(estimate_model_memory_usage(model), 'GiB')
+    compile_model(model)
 
-    model.load_weights(os.path.join(CHECKPOINT_DIR, "cp-0006.ckpt"))
+    model.load_weights(os.path.join(CHECKPOINT_DIR, "cp-0012.ckpt"))
 
-    train(model, first_epoch=7)
+    train(model, first_epoch=13)
 
     #time_forward_pass()
