@@ -1,0 +1,25 @@
+#!/bin/sh
+
+if [ $# -ne 2 ]; then
+    echo "Usage: copy_tensorflow_headers <tensorflow-git-path> <teeworlds-tmlp-git-path>"
+    exit 1
+fi
+
+SRC="$(readlink -f "$1")"
+DST="$(readlink -f "$2")/other/tensorflow/include"
+
+rm -rf "$DST"
+mkdir -p "$DST"
+
+# Headers
+cd "$SRC"
+find "tensorflow" -type f -name '*.h' -exec cp --parents \{\} "$DST" \;
+cd "$SRC/bazel-genfiles"
+find "tensorflow" -type f -name '*.h' -exec cp --parents \{\} "$DST" \;
+cd "$SRC/bazel-tensorflow/external/com_google_absl"
+find -L "absl" -type f \( -name '*.h' -o -name '*.inc' \) -exec cp --parents \{\} "$DST" \;
+cd "$SRC"
+find "third_party/eigen3/unsupported/Eigen" -type f -exec cp --parents \{\} "$DST" \;
+cd "$SRC/bazel-tensorflow/external/eigen_archive"
+find "unsupported/Eigen" -type f -exec cp --parents \{\} "$DST" \;
+find -L "Eigen" -type f -exec cp --parents \{\} "$DST" \;

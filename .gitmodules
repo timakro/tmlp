@@ -1,0 +1,3 @@
+[submodule "teeworlds-tmlp"]
+	path = teeworlds-tmlp
+	url = git@timakro.de:teeworlds-tmlp

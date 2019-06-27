@@ -1,5 +1,3 @@
-/*.mp4
-/sessions/
-/checkpoints*/
-/error
-/log
+masters.cfg
+demos/
+dumps/
