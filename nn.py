@@ -25,18 +25,17 @@ class A2CNetwork:
 
     def __init__(self, sess, live=False):
         self.sess = sess
-        self.batch_size = 1 if live else BATCH_SIZE
         self.seq_length = 1 if live else SEQUENCE_LENGTH
         self.lstm_units = 512
 
-        self.input = tf.placeholder(tf.uint8, shape=[self.batch_size, self.seq_length, 50, 90], name='input')
-        self.state_in = tf.zeros([self.batch_size, self.lstm_units*2], name='state_in')
+        self.input = tf.placeholder(tf.uint8, shape=[None, self.seq_length, 50, 90], name='input')
+        self.state_in = tf.placeholder(tf.float32, shape=[None, self.lstm_units*2], name='state_in')
         net = Embedding(TILE_COUNT, 8)(self.input)
         net = TimeDistributed(ZeroPadding2D(padding=(2, 0)))(net)
         net = TimeDistributed(Conv2D(filters=32, kernel_size=9, strides=3, padding='same', activation='relu'))(net)
         net = TimeDistributed(Conv2D(filters=64, kernel_size=4, strides=2, padding='same', activation='relu'))(net)
         net = TimeDistributed(Conv2D(filters=64, kernel_size=3, strides=1, padding='same', activation='relu'))(net)
-        net = tf.reshape(net, [self.batch_size, self.seq_length, -1])
+        net = tf.reshape(net, [-1, self.seq_length, np.product(net.get_shape()[2:])])
         net, *state_out = LSTM(self.lstm_units, return_sequences=True, return_state=True)(net, initial_state=tf.split(self.state_in, 2, axis=1))
         self.state_out = tf.concat(state_out, axis=1, name='state_out')
         #net = Dense(4096, activation='relu')(net)
@@ -53,11 +52,11 @@ class A2CNetwork:
             outputs={'target_mu': self.target_mu, 'target_var': self.target_var, 'binary': self.binary, 'weapon': self.weapon, 'state_out': self.state_out})
 
     def forward_pass(self):
-        batch = np.random.random([self.batch_size, self.seq_length, 50, 90])
-        state_in = np.random.random([self.batch_size, 512*2])
+        batch = np.random.random([1, self.seq_length, 50, 90])
+        state_in = np.random.random([1, 512*2])
 
         return self.sess.run([self.target_mu, self.target_var, self.binary, self.weapon, self.state_out],
-                             feed_dict={self.input: batch})
+                feed_dict={self.input: batch, self.state_in: state_in})
 
     def time_forward_pass(self):
         import time
