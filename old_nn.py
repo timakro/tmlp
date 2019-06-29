@@ -139,6 +139,7 @@ def build_model(train=True):
     weapon = TimeDistributed(Dense(WEAPON_COUNT, activation='softmax'), name='weapon')(net)
 
     model = tf.keras.Model(inputs=inp, outputs=[target, binary, weapon])
+    #tf.keras.experimental.export_saved_model(model, 'testsave')
     return model
 
 def compile_model(model):
@@ -191,7 +192,7 @@ def train(model, first_epoch=0):
 def time_forward_pass():
     import time
 
-    model = build_model(live=True)
+    model = build_model(train=False)
     x = np.random.randint(0, TILE_COUNT, (1, 1, 50, 90))
 
     model.predict_on_batch(x) # First prediction takes longer
@@ -227,13 +228,13 @@ if __name__ == '__main__':
     #model = build_model(train=False)
     #tf.io.write_graph(K.get_session().graph, logdir='.', name='my-model.pbtxt')
 
-    model = build_model()
+    #model = build_model(train=False)
     #model.summary(100)
     #print(estimate_model_memory_usage(model), 'GiB')
-    compile_model(model)
+    #compile_model(model)
 
-    model.load_weights(os.path.join(CHECKPOINT_DIR, "cp-0012.ckpt"))
+    #model.load_weights(os.path.join(CHECKPOINT_DIR, "cp-0012.ckpt"))
 
-    train(model, first_epoch=13)
+    #train(model, first_epoch=13)
 
-    #time_forward_pass()
+    time_forward_pass()
