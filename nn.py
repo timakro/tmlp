@@ -56,21 +56,22 @@ class A2CNetwork:
         batch = np.random.random([self.batch_size, self.seq_length, 50, 90])
         state_in = np.random.random([self.batch_size, 512*2])
 
-        self.sess.run([self.target_mu, self.target_var, self.binary, self.weapon, self.state_out],
-                      feed_dict={self.input: batch})
+        return self.sess.run([self.target_mu, self.target_var, self.binary, self.weapon, self.state_out],
+                             feed_dict={self.input: batch})
 
+    def time_forward_pass(self):
         import time
+        self.forward_pass() # First prediction takes longer
         before = time.time()
-        for i in range(100):
-            self.sess.run([self.target_mu, self.target_var, self.binary, self.weapon, self.state_out],
-                          feed_dict={self.input: batch})
-        print((time.time()-before)/100)
-
-
+        for i in range(400):
+            self.forward_pass()
+        return (time.time() - before) / 400
 
 
 if __name__ == '__main__':
     with tf.Session() as sess:
         net = A2CNetwork(sess, live=True)
-        print(net.forward_pass())
+
+        #print(net.forward_pass())
+        print(net.time_forward_pass())
         #net.save_model()
