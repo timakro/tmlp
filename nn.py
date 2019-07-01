@@ -8,7 +8,6 @@ BATCH_SIZE = 42
 SEQUENCE_LENGTH = 300 # Sources say 200-400 or 200-300 is feasible. 300 frames is 12 seconds.
 
 TILE_COUNT = 22
-WEAPON_COUNT = 5
 
 LABEL_DTYPE = np.dtype([
     ('targetx', np.int32),
@@ -42,7 +41,7 @@ class A2CNetwork:
         self.target_mu = Dense(2, activation='tanh', name='target_mu')(net)
         self.target_var = Dense(2, activation='softplus', name='target_var')(net)
         self.binary = Dense(5, activation='sigmoid', name='binary')(net)
-        self.weapon = Dense(WEAPON_COUNT, activation='softmax', name='weapon')(net)
+        self.weapon = Dense(5, activation='softmax', name='weapon')(net)
 
         sess.run(tf.global_variables_initializer())
 
@@ -72,5 +71,5 @@ if __name__ == '__main__':
         net = A2CNetwork(sess, live=True)
 
         #print(net.forward_pass())
-        print(net.time_forward_pass())
-        #net.save_model()
+        #print(net.time_forward_pass())
+        net.save_model()
