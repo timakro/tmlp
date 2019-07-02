@@ -1,0 +1,38 @@
+State reset between rounds
+Try JIT
+
+
+Notes
+=======
+
+Reward: Comes directly from simulation
+
+Value: The head with one node in the network
+
+Advantage: Return - Value
+
+
+The value function is trained with the RETURN
+The policy function is trained with ADVANTAGE
+
+
+Return = Q = R = Discounted reward = target value (calculated with rewards, gamma and bootstrap value)
+
+Value loss: mean squared error of VALUE-DURING-TRANING and Return
+
+Policy loss: -log( POLICY-DURING-TRAINING(just the action taken) ) * Advantage
+
+=> mean the losses
+
+loss = policy loss + value loss * value coef - entropy * entropy coeff
+
+Classic Advantage method:
+    Advantage = Return - Value
+
+Generalized Advantage Estimation:
+    Advantage = ?
+
+
+
+This one guy first calculates just advanted with the Generalized Advantage Estimation and then gets return by Return = Advantage + Value
+Could use this to double check 

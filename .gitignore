@@ -1,4 +1,5 @@
 masters.cfg
 demos/
 dumps/
-testsave/
+savedmodel/
+checkpoints/
