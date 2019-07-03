@@ -6,19 +6,26 @@ import time
 import shutil
 import logging
 import re
+import math
 from gzip import GzipFile
 
 import numpy as np
+from numpy.lib.recfunctions import structured_to_unstructured
 import tensorflow as tf
 from tensorflow.keras.layers import TimeDistributed, Embedding, ZeroPadding2D, Conv2D, Reshape, LSTM, Dense
 
 
 SERVER_AGENTS = [2]*2
-EPISODE_LENGTH = 7500
-SEQUENCE_LENGTH = 100 #300 # Internet says 200-400
-LEARNING_RATE = 1e-4
-CLIPPING_NORM = 5.0
+EPISODE_LENGTH = 200 #7500
+SEQUENCE_LENGTH = 100 #300 # Internet says 200-300, 200-400
+
+# Hyper parameter guidance: https://medium.com/aureliantactics/ppo-hyperparameters-and-ranges-6fc2d29bccbe
 GAMMA = 0.99
+LAMBD = 0.95
+VALUE_COEF = 0.5
+ENTROPY_COEF = 0.01
+MAX_GRAD_NORM = 5.0 # Internet says 1-10, 40, 0.5
+LEARNING_RATE = 1e-4
 
 LSTM_UNITS = 512
 TILE_COUNT = 22
@@ -44,46 +51,52 @@ class A2CNetwork:
 
         self.input = tf.placeholder(tf.uint8, shape=[None, None, 50, 90], name='input')
         self.rnn_state_in = tf.placeholder(tf.float32, shape=[None, LSTM_UNITS*2], name='rnn_state_in')
+        batch_size = tf.shape(self.input)[0]
         seq_length = tf.shape(self.input)[1]
         net = Embedding(TILE_COUNT, 8)(self.input)
         net = TimeDistributed(ZeroPadding2D(padding=(2, 0)))(net)
         net = TimeDistributed(Conv2D(filters=32, kernel_size=9, strides=3, padding='same', activation='relu'))(net)
         net = TimeDistributed(Conv2D(filters=64, kernel_size=4, strides=2, padding='same', activation='relu'))(net)
         net = TimeDistributed(Conv2D(filters=64, kernel_size=3, strides=1, padding='same', activation='relu'))(net)
-        net = tf.reshape(net, [-1, seq_length, np.product(net.get_shape()[2:])])
+        net = tf.reshape(net, [batch_size, seq_length, np.product(net.get_shape()[2:])])
         net, *rnn_state_out = LSTM(LSTM_UNITS, return_sequences=True, return_state=True)(net, initial_state=tf.split(self.rnn_state_in, 2, axis=1))
         self.rnn_state_out = tf.concat(rnn_state_out, axis=1, name='rnn_state_out')
         #net = Dense(4096, activation='relu')(net)
         self.target_mu = Dense(2, activation='tanh', name='target_mu')(net)
         self.target_var = Dense(2, activation='softplus', name='target_var')(net)
-        self.binary = Dense(5, activation='sigmoid', name='binary')(net)
-        self.weapon = Dense(5, activation='softmax', name='weapon')(net)
+        self.binary_logits = Dense(5)(net)
+        self.binary = tf.nn.sigmoid(self.binary_logits, name='binary')
+        self.weapon_logits = Dense(5)(net)
+        self.weapon = tf.nn.softmax(self.weapon_logits, name='weapon')
         self.value = Dense(1, name='value')(net)
 
-        # Train ops
+        # Loss and train ops
+        self.aim_acts = tf.placeholder(tf.float32, shape=[None, None, 2])
+        self.bin_acts = tf.placeholder(tf.float32, shape=[None, None, 5])
+        self.wpn_acts = tf.placeholder(tf.int32, shape=[None, None])
         self.returns = tf.placeholder(tf.float32, shape=[None, None])
         self.advantages = tf.placeholder(tf.float32, shape=[None, None])
 
-        #aim_logprob
-        #bin_logprob
-        #wpn_logprob
+        aim_logprob = tf.reduce_sum(-tf.square(self.aim_acts - self.target_mu)/(2*self.target_var) - tf.log(tf.sqrt(2*math.pi*self.target_var)), axis=2)
+        bin_logprob = tf.reduce_sum(-tf.nn.sigmoid_cross_entropy_with_logits(labels=self.bin_acts, logits=self.binary_logits), axis=2)
+        wpn_logprob = tf.log(tf.gather_nd(self.weapon, tf.stack(tf.meshgrid(tf.range(batch_size), tf.range(seq_length), indexing='ij') + [self.wpn_acts], axis=2)))
 
-        #aim_entropy
-        #bin_entropy
-        #wpn_entropy
+        aim_entropy = tf.reduce_sum((tf.log(2*math.pi*self.target_var) + 1)/2, axis=2)
+        bin_entropy = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(labels=self.binary, logits=self.binary_logits), axis=2)
+        wpn_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.weapon, logits=self.weapon_logits)
 
-        #logprob = aim_logprob + bin_logprob + wpn_logprob
-        #entropy = aim_entropy + bin_entropy + wpn_entropy
+        logprob = aim_logprob + bin_logprob + wpn_logprob
+        entropy = aim_entropy + bin_entropy + wpn_entropy
 
+        policy_loss = tf.reduce_mean(-logprob * self.advantages)
         value_loss = tf.losses.mean_squared_error(self.returns, tf.squeeze(self.value, axis=2))
-        #policy_loss = tf.reduce_mean(-logprob * advantage)
-        #entropy = tf.reduce_mean(entropy)
+        entropy = tf.reduce_mean(entropy)
 
-        loss = value_loss
+        loss = policy_loss + value_loss*VALUE_COEF - entropy*ENTROPY_COEF
 
         optimizer = tf.train.AdamOptimizer(LEARNING_RATE)
         gradients, variables = zip(*optimizer.compute_gradients(loss))
-        gradients, _ = tf.clip_by_global_norm(gradients, CLIPPING_NORM)
+        gradients, _ = tf.clip_by_global_norm(gradients, MAX_GRAD_NORM)
         self.train_op = optimizer.apply_gradients(zip(gradients, variables))
 
         # Init and save/restore ops
@@ -112,9 +125,11 @@ class A2CNetwork:
             outputs={'target_mu': self.target_mu, 'target_var': self.target_var, 'binary': self.binary,
                      'weapon': self.weapon, 'rnn_state_out': self.rnn_state_out, 'value': self.value})
 
-    def train(self, inputs, rnn_state_in, returns, advantages):
+    def train(self, inputs, rnn_state_in, aim_acts, bin_acts, wpn_acts, returns, advantages):
         _, rnn_state_out = self.sess.run([self.train_op, self.rnn_state_out],
-                feed_dict={self.input: inputs, self.rnn_state_in: rnn_state_in, self.returns: returns, self.advantages: advantages})
+                feed_dict={self.input: inputs, self.rnn_state_in: rnn_state_in,
+                           self.aim_acts: aim_acts, self.bin_acts: bin_acts, self.wpn_acts: wpn_acts,
+                           self.returns: returns, self.advantages: advantages})
         return rnn_state_out
 
     def forward_pass(self):
@@ -176,8 +191,8 @@ def main(sess):
 
             # Read rollouts from disk
             states = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH, 50, 90], dtype=np.uint8)
-            #aim_acts
-            #bin_acts
+            aim_acts = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH, 2], dtype=np.float32)
+            bin_acts = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH, 5], dtype=np.bool)
             wpn_acts = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH], dtype=np.uint8)
             values = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH], dtype=np.float32)
             rewards = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH], dtype=np.float32)
@@ -186,6 +201,9 @@ def main(sess):
                 with GzipFile(path+'-state.gz') as state_file, GzipFile(path+'-action.gz') as action_file:
                     states[i] = np.frombuffer(state_file.read(), dtype=np.uint8).reshape([SEQUENCE_LENGTH, 50, 90])
                     action_data = np.frombuffer(action_file.read(), dtype=ACTION_DTYPE)
+                    aim_acts[i] = structured_to_unstructured(action_data[['target_x', 'target_y']])
+                    bin_acts[i] = structured_to_unstructured(action_data[['b_left', 'b_right', 'b_jump', 'b_fire', 'b_hook']])
+                    wpn_acts[i] = action_data['weapon']
                     values[i] = action_data['value']
                     rewards[i] = action_data['reward']
                 os.unlink(path+'-state.gz')
@@ -199,7 +217,7 @@ def main(sess):
                 returns[:,i] = future_reward = rewards[:,i] + GAMMA*future_reward
             advantages = returns - values
 
-            rnn_state = net.train(states, rnn_state, returns, advantages)
+            rnn_state = net.train(states, rnn_state, aim_acts, bin_acts, wpn_acts, returns, advantages)
 
         # Save checkpoint
         net.save_variables(episode)
