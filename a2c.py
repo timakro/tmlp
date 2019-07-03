@@ -6,27 +6,34 @@ import time
 import shutil
 import logging
 import re
+from gzip import GzipFile
 
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import TimeDistributed, Embedding, ZeroPadding2D, Conv2D, Reshape, LSTM, Dense
 
 
-NUM_GAME_SERVERS = 2
-SEQUENCE_LENGTH = 300 # Sources say 200-400 or 200-300 is feasible. 300 frames is 12 seconds.
+SERVER_AGENTS = [2]*2
+EPISODE_LENGTH = 7500
+SEQUENCE_LENGTH = 100 #300 # Internet says 200-400
+LEARNING_RATE = 1e-4
+CLIPPING_NORM = 5.0
+GAMMA = 0.99
 
 LSTM_UNITS = 512
-
 TILE_COUNT = 22
 
-LABEL_DTYPE = np.dtype([
-    ('targetx', np.int32),
-    ('targety', np.int32),
-    ('direction', np.int8),
-    ('weapon', np.int8),
-    ('jump', np.bool),
-    ('fire', np.bool),
-    ('hook', np.bool),
+ACTION_DTYPE = np.dtype([
+    ('target_x', np.float32),
+    ('target_y', np.float32),
+    ('b_left', np.bool),
+    ('b_right', np.bool),
+    ('b_jump', np.bool),
+    ('b_fire', np.bool),
+    ('b_hook', np.bool),
+    ('weapon', np.uint8),
+    ('value', np.float32),
+    ('reward', np.float32),
 ])
 
 
@@ -36,7 +43,7 @@ class A2CNetwork:
         self.sess = sess
 
         self.input = tf.placeholder(tf.uint8, shape=[None, None, 50, 90], name='input')
-        self.state_in = tf.placeholder(tf.float32, shape=[None, LSTM_UNITS*2], name='state_in')
+        self.rnn_state_in = tf.placeholder(tf.float32, shape=[None, LSTM_UNITS*2], name='rnn_state_in')
         seq_length = tf.shape(self.input)[1]
         net = Embedding(TILE_COUNT, 8)(self.input)
         net = TimeDistributed(ZeroPadding2D(padding=(2, 0)))(net)
@@ -44,8 +51,8 @@ class A2CNetwork:
         net = TimeDistributed(Conv2D(filters=64, kernel_size=4, strides=2, padding='same', activation='relu'))(net)
         net = TimeDistributed(Conv2D(filters=64, kernel_size=3, strides=1, padding='same', activation='relu'))(net)
         net = tf.reshape(net, [-1, seq_length, np.product(net.get_shape()[2:])])
-        net, *state_out = LSTM(LSTM_UNITS, return_sequences=True, return_state=True)(net, initial_state=tf.split(self.state_in, 2, axis=1))
-        self.state_out = tf.concat(state_out, axis=1, name='state_out')
+        net, *rnn_state_out = LSTM(LSTM_UNITS, return_sequences=True, return_state=True)(net, initial_state=tf.split(self.rnn_state_in, 2, axis=1))
+        self.rnn_state_out = tf.concat(rnn_state_out, axis=1, name='rnn_state_out')
         #net = Dense(4096, activation='relu')(net)
         self.target_mu = Dense(2, activation='tanh', name='target_mu')(net)
         self.target_var = Dense(2, activation='softplus', name='target_var')(net)
@@ -53,6 +60,33 @@ class A2CNetwork:
         self.weapon = Dense(5, activation='softmax', name='weapon')(net)
         self.value = Dense(1, name='value')(net)
 
+        # Train ops
+        self.returns = tf.placeholder(tf.float32, shape=[None, None])
+        self.advantages = tf.placeholder(tf.float32, shape=[None, None])
+
+        #aim_logprob
+        #bin_logprob
+        #wpn_logprob
+
+        #aim_entropy
+        #bin_entropy
+        #wpn_entropy
+
+        #logprob = aim_logprob + bin_logprob + wpn_logprob
+        #entropy = aim_entropy + bin_entropy + wpn_entropy
+
+        value_loss = tf.losses.mean_squared_error(self.returns, tf.squeeze(self.value, axis=2))
+        #policy_loss = tf.reduce_mean(-logprob * advantage)
+        #entropy = tf.reduce_mean(entropy)
+
+        loss = value_loss
+
+        optimizer = tf.train.AdamOptimizer(LEARNING_RATE)
+        gradients, variables = zip(*optimizer.compute_gradients(loss))
+        gradients, _ = tf.clip_by_global_norm(gradients, CLIPPING_NORM)
+        self.train_op = optimizer.apply_gradients(zip(gradients, variables))
+
+        # Init and save/restore ops
         self.init_op = tf.global_variables_initializer()
         self.saver = tf.train.Saver(max_to_keep=5, keep_checkpoint_every_n_hours=1, pad_step_number=True)
 
@@ -71,18 +105,24 @@ class A2CNetwork:
         self.saver.save(self.sess, 'checkpoints/episode', global_step=episode, write_meta_graph=False)
 
     def write_model_to_disk(self):
-        shutil.rmtree('savedmodel')
+        try: shutil.rmtree('savedmodel')
+        except FileNotFoundError: pass
         tf.saved_model.simple_save(
-            self.sess, 'savedmodel', inputs={'input': self.input, 'state_in': self.state_in},
+            self.sess, 'savedmodel', inputs={'input': self.input, 'rnn_state_in': self.rnn_state_in},
             outputs={'target_mu': self.target_mu, 'target_var': self.target_var, 'binary': self.binary,
-                     'weapon': self.weapon, 'state_out': self.state_out, 'value': self.value})
+                     'weapon': self.weapon, 'rnn_state_out': self.rnn_state_out, 'value': self.value})
+
+    def train(self, inputs, rnn_state_in, returns, advantages):
+        _, rnn_state_out = self.sess.run([self.train_op, self.rnn_state_out],
+                feed_dict={self.input: inputs, self.rnn_state_in: rnn_state_in, self.returns: returns, self.advantages: advantages})
+        return rnn_state_out
 
     def forward_pass(self):
         batch = np.random.random([1, 1, 50, 90])
-        state_in = np.random.random([1, 512*2])
+        rnn_state_in = np.random.random([1, LSTM_UNITS*2])
 
         return self.sess.run([self.target_mu, self.target_var, self.binary, self.weapon, self.state_out],
-                feed_dict={self.input: batch, self.state_in: state_in})
+                feed_dict={self.input: batch, self.rnn_state_in: rnn_state_in})
 
     def time_forward_pass(self):
         self.forward_pass() # First pass takes longer
@@ -107,37 +147,66 @@ def main(sess):
     net = A2CNetwork(sess)
     episode = net.load_variables()
 
-    # Start game servers
-    runners = []
-    for i in range(NUM_GAME_SERVERS):
-        cmds = ['sv_port {};'.format(8303 + i)
-               ,'sv_name TMLP Training Srv {};'.format(i)
-               ,'tmlp_server_id {};'.format(i)
-               ,'tmlp_lstm_units {};'.format(LSTM_UNITS)
-               ,'tmlp_episode_steps {};'.format(SEQUENCE_LENGTH)]
-        p = subprocess.Popen(['teeworlds-tmlp/build/teeworlds_srv', ''.join(cmds)],
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, universal_newlines=True,
-                             preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_IGN))
-        runners.append(p)
-
     while running:
-        # Game servers simulate one episode
-        net.write_model_to_disk()
-        for p in runners:
-            p.send_signal(signal.SIGUSR1)
-        for p in runners:
-            while p.stdout.readline() != "Rollout saved to disk.\n":
-                pass
+        print("Episode", episode)
 
-        # TODO: Load rollouts
-        # TODO: Train
+        # Start game servers
+        runners = []
+        for i, num_agents in enumerate(SERVER_AGENTS):
+            cmds = ['sv_port {};'.format(8303 + i)
+                   ,'sv_name TMLP Training Srv {};'.format(i)
+                   ,'dbg_dummies {};'.format(num_agents)
+                   ,'tmlp_server_id {};'.format(i)
+                   ,'tmlp_lstm_units {};'.format(LSTM_UNITS)
+                   ,'tmlp_sequence_length {};'.format(SEQUENCE_LENGTH)]
+            p = subprocess.Popen(['teeworlds-tmlp/build/teeworlds_srv', ''.join(cmds)],
+                                 stdout=subprocess.PIPE, universal_newlines=True,
+                                 preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_IGN))
+            runners.append(p)
+
+        rnn_state = np.zeros([sum(SERVER_AGENTS), LSTM_UNITS*2], dtype=np.float32)
+        for _ in range(EPISODE_LENGTH // SEQUENCE_LENGTH):
+            # Game servers simulate one sequence
+            net.write_model_to_disk()
+            for p in runners:
+                p.send_signal(signal.SIGUSR1)
+            for p in runners:
+                while p.stdout.readline() != "Rollout saved to disk.\n":
+                    pass
+
+            # Read rollouts from disk
+            states = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH, 50, 90], dtype=np.uint8)
+            #aim_acts
+            #bin_acts
+            wpn_acts = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH], dtype=np.uint8)
+            values = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH], dtype=np.float32)
+            rewards = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH], dtype=np.float32)
+            for i, (s, a) in enumerate((s, a) for s, num_agents in enumerate(SERVER_AGENTS) for a in range(num_agents)):
+                path = 'rollouts/{:04}-{:02}'.format(s, a)
+                with GzipFile(path+'-state.gz') as state_file, GzipFile(path+'-action.gz') as action_file:
+                    states[i] = np.frombuffer(state_file.read(), dtype=np.uint8).reshape([SEQUENCE_LENGTH, 50, 90])
+                    action_data = np.frombuffer(action_file.read(), dtype=ACTION_DTYPE)
+                    values[i] = action_data['value']
+                    rewards[i] = action_data['reward']
+                os.unlink(path+'-state.gz')
+                os.unlink(path+'-action.gz')
+
+            # Calculate return and advantage
+            returns = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH], dtype=np.float32)
+            #advantages = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH], dtype=np.float32)
+            future_reward = values[:,-1]
+            for i in reversed(range(SEQUENCE_LENGTH)):
+                returns[:,i] = future_reward = rewards[:,i] + GAMMA*future_reward
+            advantages = returns - values
+
+            rnn_state = net.train(states, rnn_state, returns, advantages)
 
         # Save checkpoint
         net.save_variables(episode)
         episode += 1
 
-    for p in runners:
-        p.terminate()
+        for p in runners:
+            p.terminate()
 
 
 if __name__ == '__main__':
@@ -148,10 +217,11 @@ if __name__ == '__main__':
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
     logging.getLogger('tensorflow').setLevel(logging.ERROR)
 
-    with tf.Session() as sess:
-        main(sess)
+    # Workaround for https://github.com/tensorflow/tensorflow/issues/23780
+    from tensorflow.core.protobuf import rewriter_config_pb2
+    config_proto = tf.ConfigProto()
+    off = rewriter_config_pb2.RewriterConfig.OFF
+    config_proto.graph_options.rewrite_options.arithmetic_optimization = off
 
-        #net = A2CNetwork(sess)
-        #print(net.forward_pass())
-        #net.time_forward_pass()
-        #net.save_to_disk()
+    with tf.Session(config=config_proto) as sess:
+        main(sess)
