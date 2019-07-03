@@ -64,29 +64,31 @@ class A2CNetwork:
         #net = Dense(4096, activation='relu')(net)
         self.target_mu = Dense(2, activation='tanh', name='target_mu')(net)
         self.target_var = Dense(2, activation='softplus', name='target_var')(net)
-        self.binary_logits = Dense(5)(net)
-        self.binary = tf.nn.sigmoid(self.binary_logits, name='binary')
-        self.weapon_logits = Dense(5)(net)
-        self.weapon = tf.nn.softmax(self.weapon_logits, name='weapon')
+        self.binary = Dense(5, activation='sigmoid', name='binary')(net)
+        self.weapon = Dense(5, activation='softmax', name='weapon')(net)
         self.value = Dense(1, name='value')(net)
 
         # Loss and train ops
-        self.aim_acts = tf.placeholder(tf.float32, shape=[None, None, 2])
-        self.bin_acts = tf.placeholder(tf.float32, shape=[None, None, 5])
-        self.wpn_acts = tf.placeholder(tf.int32, shape=[None, None])
+        self.target_acts = tf.placeholder(tf.float32, shape=[None, None, 2])
+        self.binary_acts = tf.placeholder(tf.bool, shape=[None, None, 5])
+        self.weapon_acts = tf.placeholder(tf.int32, shape=[None, None])
         self.returns = tf.placeholder(tf.float32, shape=[None, None])
         self.advantages = tf.placeholder(tf.float32, shape=[None, None])
 
-        aim_logprob = tf.reduce_sum(-tf.square(self.aim_acts - self.target_mu)/(2*self.target_var) - tf.log(tf.sqrt(2*math.pi*self.target_var)), axis=2)
-        bin_logprob = tf.reduce_sum(-tf.nn.sigmoid_cross_entropy_with_logits(labels=self.bin_acts, logits=self.binary_logits), axis=2)
-        wpn_logprob = tf.log(tf.gather_nd(self.weapon, tf.stack(tf.meshgrid(tf.range(batch_size), tf.range(seq_length), indexing='ij') + [self.wpn_acts], axis=2)))
+        target_dist = tf.distributions.Normal(loc=self.target_mu, scale=tf.sqrt(self.target_var))
+        target_logprob = tf.reduce_sum(target_dist.log_prob(self.target_acts), axis=2)
+        target_entropy = tf.reduce_sum(target_dist.entropy(), axis=2)
 
-        aim_entropy = tf.reduce_sum((tf.log(2*math.pi*self.target_var) + 1)/2, axis=2)
-        bin_entropy = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(labels=self.binary, logits=self.binary_logits), axis=2)
-        wpn_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.weapon, logits=self.weapon_logits)
+        binary_dist = tf.distributions.Bernoulli(probs=self.binary, dtype=tf.bool)
+        binary_logprob = tf.reduce_sum(binary_dist.log_prob(self.binary_acts), axis=2)
+        binary_entropy = tf.reduce_sum(binary_dist.entropy(), axis=2)
 
-        logprob = aim_logprob + bin_logprob + wpn_logprob
-        entropy = aim_entropy + bin_entropy + wpn_entropy
+        weapon_dist = tf.distributions.Categorical(probs=self.weapon)
+        weapon_logprob = weapon_dist.log_prob(self.weapon_acts)
+        weapon_entropy = weapon_dist.entropy()
+
+        logprob = target_logprob + binary_logprob + weapon_logprob
+        entropy = target_entropy + binary_entropy + weapon_entropy
 
         policy_loss = tf.reduce_mean(-logprob * self.advantages)
         value_loss = tf.losses.mean_squared_error(self.returns, tf.squeeze(self.value, axis=2))
@@ -125,10 +127,10 @@ class A2CNetwork:
             outputs={'target_mu': self.target_mu, 'target_var': self.target_var, 'binary': self.binary,
                      'weapon': self.weapon, 'rnn_state_out': self.rnn_state_out, 'value': self.value})
 
-    def train(self, inputs, rnn_state_in, aim_acts, bin_acts, wpn_acts, returns, advantages):
+    def train(self, inputs, rnn_state_in, target_acts, binary_acts, weapon_acts, returns, advantages):
         _, rnn_state_out = self.sess.run([self.train_op, self.rnn_state_out],
                 feed_dict={self.input: inputs, self.rnn_state_in: rnn_state_in,
-                           self.aim_acts: aim_acts, self.bin_acts: bin_acts, self.wpn_acts: wpn_acts,
+                           self.target_acts: target_acts, self.binary_acts: binary_acts, self.weapon_acts: weapon_acts,
                            self.returns: returns, self.advantages: advantages})
         return rnn_state_out
 
@@ -191,9 +193,9 @@ def main(sess):
 
             # Read rollouts from disk
             states = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH, 50, 90], dtype=np.uint8)
-            aim_acts = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH, 2], dtype=np.float32)
-            bin_acts = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH, 5], dtype=np.bool)
-            wpn_acts = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH], dtype=np.uint8)
+            target_acts = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH, 2], dtype=np.float32)
+            binary_acts = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH, 5], dtype=np.bool)
+            weapon_acts = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH], dtype=np.uint8)
             values = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH], dtype=np.float32)
             rewards = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH], dtype=np.float32)
             for i, (s, a) in enumerate((s, a) for s, num_agents in enumerate(SERVER_AGENTS) for a in range(num_agents)):
@@ -201,9 +203,9 @@ def main(sess):
                 with GzipFile(path+'-state.gz') as state_file, GzipFile(path+'-action.gz') as action_file:
                     states[i] = np.frombuffer(state_file.read(), dtype=np.uint8).reshape([SEQUENCE_LENGTH, 50, 90])
                     action_data = np.frombuffer(action_file.read(), dtype=ACTION_DTYPE)
-                    aim_acts[i] = structured_to_unstructured(action_data[['target_x', 'target_y']])
-                    bin_acts[i] = structured_to_unstructured(action_data[['b_left', 'b_right', 'b_jump', 'b_fire', 'b_hook']])
-                    wpn_acts[i] = action_data['weapon']
+                    target_acts[i] = structured_to_unstructured(action_data[['target_x', 'target_y']])
+                    binary_acts[i] = structured_to_unstructured(action_data[['b_left', 'b_right', 'b_jump', 'b_fire', 'b_hook']])
+                    weapon_acts[i] = action_data['weapon']
                     values[i] = action_data['value']
                     rewards[i] = action_data['reward']
                 os.unlink(path+'-state.gz')
@@ -217,7 +219,7 @@ def main(sess):
                 returns[:,i] = future_reward = rewards[:,i] + GAMMA*future_reward
             advantages = returns - values
 
-            rnn_state = net.train(states, rnn_state, aim_acts, bin_acts, wpn_acts, returns, advantages)
+            rnn_state = net.train(states, rnn_state, target_acts, binary_acts, weapon_acts, returns, advantages)
 
         # Save checkpoint
         net.save_variables(episode)
