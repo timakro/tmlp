@@ -211,13 +211,16 @@ def main(sess):
                 os.unlink(path+'-state.gz')
                 os.unlink(path+'-action.gz')
 
-            # Calculate return and advantage
+            # Calculate return and Generalized Advantage Estimation
             returns = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH], dtype=np.float32)
-            #advantages = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH], dtype=np.float32)
-            future_reward = values[:,-1]
+            advantages = np.empty([sum(SERVER_AGENTS), SEQUENCE_LENGTH], dtype=np.float32)
+            next_return = next_value = values[:,-1]
+            next_advantage = 0
             for i in reversed(range(SEQUENCE_LENGTH)):
-                returns[:,i] = future_reward = rewards[:,i] + GAMMA*future_reward
-            advantages = returns - values
+                returns[:,i] = next_return = rewards[:,i] + GAMMA*next_return
+                delta = rewards[:,i] + GAMMA*next_value - values[:,i]
+                advantages[:,i] = next_advantage = GAMMA*LAMBD*next_advantage + delta
+                next_value = values[:,i]
 
             rnn_state = net.train(states, rnn_state, target_acts, binary_acts, weapon_acts, returns, advantages)
 
