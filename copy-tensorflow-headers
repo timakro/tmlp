@@ -6,9 +6,10 @@ if [ $# -ne 2 ]; then
 fi
 
 SRC="$(readlink -f "$1")"
-DST="$(readlink -f "$2")/other/tensorflow/include"
+OBJ_DST="$(readlink -f "$2")/other/tensorflow"
+DST="$OBJ_DST/include"
 
-rm -rf "$DST"
+rm -rf "$OBJ_DST"
 mkdir -p "$DST"
 
 # Headers
@@ -23,3 +24,9 @@ find "third_party/eigen3/unsupported/Eigen" -type f -exec cp --parents \{\} "$DS
 cd "$SRC/bazel-tensorflow/external/eigen_archive"
 find "unsupported/Eigen" -type f -exec cp --parents \{\} "$DST" \;
 find -L "Eigen" -type f -exec cp --parents \{\} "$DST" \;
+cd "$SRC/bazel-tensorflow/external/protobuf_archive/src"
+find "google" -type f \( -name '*.h' -o -name '*.inc' \) -exec cp --parents \{\} "$DST" \;
+
+# Shared objects
+cp "$SRC/bazel-bin/tensorflow/libtensorflow_cc.so.1" "$OBJ_DST"
+cp "$SRC/bazel-bin/tensorflow/libtensorflow_framework.so.1" "$OBJ_DST"
