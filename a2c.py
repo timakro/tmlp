@@ -15,16 +15,16 @@ import tensorflow as tf
 from tensorflow.keras.layers import TimeDistributed, Embedding, ZeroPadding2D, Conv2D, Reshape, LSTM, Dense
 
 
-SERVER_AGENTS = [2]*2
-EPISODE_LENGTH = 200 #7500
-SEQUENCE_LENGTH = 100 #300 # Internet says 200-300, 200-400
+SERVER_AGENTS = [2]*35
+EPISODE_LENGTH = 7500 # 5 minutes
+SEQUENCE_LENGTH = 625 # Internet says 200-300, 200-400 (625 frames = 25 seconds)
 
 # Hyper parameter guidance: https://medium.com/aureliantactics/ppo-hyperparameters-and-ranges-6fc2d29bccbe
 GAMMA = 0.99
 LAMBD = 0.95
 VALUE_COEF = 0.5
 ENTROPY_COEF = 0.01
-MAX_GRAD_NORM = 5.0 # Internet says 1-10, 40, 0.5
+MAX_GRAD_NORM = 40.0 # Internet says 1-10, 40, 0.5
 LEARNING_RATE = 1e-4
 
 LSTM_UNITS = 512
@@ -165,7 +165,7 @@ def main(sess):
     episode = net.load_variables()
 
     while running:
-        print("Episode", episode)
+        print("Commencing episode", episode)
 
         # Start game servers
         runners = []
@@ -184,6 +184,7 @@ def main(sess):
         rnn_state = np.zeros([sum(SERVER_AGENTS), LSTM_UNITS*2], dtype=np.float32)
         for _ in range(EPISODE_LENGTH // SEQUENCE_LENGTH):
             # Game servers simulate one sequence
+            sim_start = time.time()
             net.write_model_to_disk()
             for p in runners:
                 p.send_signal(signal.SIGUSR1)
@@ -222,7 +223,12 @@ def main(sess):
                 advantages[:,i] = next_advantage = GAMMA*LAMBD*next_advantage + delta
                 next_value = values[:,i]
 
+            train_start = time.time()
             rnn_state = net.train(states, rnn_state, target_acts, binary_acts, weapon_acts, returns, advantages)
+
+            print("Sequence finished in {:.2f}s ({:.2f}s simulation, {:.2f}s training) total negative reward {}, total positive reward {}"
+                  .format(time.time()-sim_start, train_start-sim_start, time.time()-train_start,
+                          rewards.clip(max=0).sum(), rewards.clip(min=0).sum()))
 
         # Save checkpoint
         net.save_variables(episode)
@@ -230,6 +236,7 @@ def main(sess):
 
         for p in runners:
             p.terminate()
+        time.sleep(1) # Wait for ports to be freed
 
 
 # Change directory to script location
