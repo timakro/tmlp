@@ -232,19 +232,19 @@ def main(sess):
             p.terminate()
 
 
+# Change directory to script location
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+# Hide tensorflow warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
+
+# Workaround for https://github.com/tensorflow/tensorflow/issues/23780
+from tensorflow.core.protobuf import rewriter_config_pb2
+config_proto = tf.ConfigProto()
+off = rewriter_config_pb2.RewriterConfig.OFF
+config_proto.graph_options.rewrite_options.arithmetic_optimization = off
+
 if __name__ == '__main__':
-    # Change directory to script location
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
-    # Hide tensorflow warnings
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-    logging.getLogger('tensorflow').setLevel(logging.ERROR)
-
-    # Workaround for https://github.com/tensorflow/tensorflow/issues/23780
-    from tensorflow.core.protobuf import rewriter_config_pb2
-    config_proto = tf.ConfigProto()
-    off = rewriter_config_pb2.RewriterConfig.OFF
-    config_proto.graph_options.rewrite_options.arithmetic_optimization = off
-
     with tf.Session(config=config_proto) as sess:
         main(sess)

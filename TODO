@@ -1,6 +1,7 @@
 Try JIT
 Look at PPO
 Try Tensorboard
+No available spawn points might become an issue with more players
 
 Notes
 =======
